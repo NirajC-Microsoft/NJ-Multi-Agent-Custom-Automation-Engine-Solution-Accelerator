@@ -36,16 +36,26 @@ jobs:
           export AZURE_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}
           export AZURE_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}
           export AZURE_SUBSCRIPTION_ID="${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-          export GPT_MIN_CAPACITY="150"
+          export GPT_MIN_CAPACITY="500"
           export AZURE_REGIONS="${{ vars.AZURE_REGIONS }}"
 
           chmod +x infra/scripts/checkquota.sh
-          if ! infra/scripts/checkquota.sh; then
-            # If quota check fails due to insufficient quota, set the flag
-            if grep -q "No region with sufficient quota found" infra/scripts/checkquota.sh; then
+          
+          # Capture the script output for analysis
+          QUOTA_OUTPUT=$(infra/scripts/checkquota.sh 2>&1)
+          QUOTA_EXIT_CODE=$?
+          
+          echo "$QUOTA_OUTPUT"
+          
+          if [ $QUOTA_EXIT_CODE -ne 0 ]; then
+            # Check if the failure is due to insufficient quota
+            if echo "$QUOTA_OUTPUT" | grep -q "No region with sufficient quota found"; then
               echo "QUOTA_FAILED=true" >> $GITHUB_ENV
+              exit 0  # Don't fail the pipeline yet, let the notification step handle it
+            else
+              echo "QUOTA_FAILED=false" >> $GITHUB_ENV
+              exit 1  # Fail for other errors
             fi
-            exit 1  # Fail the pipeline if any other failure occurs
           fi
 
       - name: Send Notification on Quota Failure
@@ -69,8 +79,14 @@ jobs:
 
       - name: Set Deployment Region
         run: |
-          echo "Selected Region: $VALID_REGION"
-          echo "AZURE_LOCATION=$VALID_REGION" >> $GITHUB_ENV
+          if [ -n "$VALID_REGION" ]; then
+            echo "Selected Region: $VALID_REGION"
+            echo "AZURE_LOCATION=$VALID_REGION" >> $GITHUB_ENV
+          else
+            echo "⚠️ Warning: No valid region was set by quota check"
+            # This step should not run if quota check failed, but adding safety check
+            exit 1
+          fi
 
       - name: Setup Azure CLI
         run: |
